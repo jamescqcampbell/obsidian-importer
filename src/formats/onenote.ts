@@ -699,9 +699,47 @@ export class OneNoteImporter extends FormatImporter {
 			// If a to-do tag, then convert it into a Markdown task list
 			if (element.getAttribute('data-tag')?.contains('to-do')) {
 				const isChecked = element.getAttribute('data-tag') === 'to-do:completed';
-				const check = isChecked ? '[x]' : '[ ]';
-				// We need to use innerHTML in case an image was marked as TO-DO
-				element.innerHTML = `- ${check} ${element.innerHTML}`;
+
+				// When the tagged element is inside a <li>, insert an
+				// <input type="checkbox"> as the first child of the <li> so
+				// that the GFM turndown rule emits "- [ ] " / "- [x] ".
+				// Injecting literal "- [ ] " text would be escaped by turndown.
+				// See https://learn.microsoft.com/en-us/graph/onenote-input-output-html
+				const closestLi = element.closest('li');
+				if (closestLi) {
+					const checkbox = pageElement.ownerDocument.createElement('input');
+					checkbox.setAttribute('type', 'checkbox');
+					if (isChecked) {
+						// Use setAttribute so the attribute is present in the
+						// serialised HTML and turndown can read node.checked.
+						checkbox.setAttribute('checked', '');
+					}
+					closestLi.insertBefore(checkbox, closestLi.firstChild);
+					// Remove data-tag so a <li> with multiple tagged
+					// descendants is not processed more than once.
+					element.removeAttribute('data-tag');
+				}
+				else {
+					// Top-level to-do paragraph: replace with a task-list item
+					// so turndown emits unescaped "- [ ] " / "- [x] ".
+					// The OneNote API does not encode visual indentation for
+					// these elements — they appear flat regardless of how they
+					// look in the UI.
+					const ul = pageElement.ownerDocument.createElement('ul');
+					const li = pageElement.ownerDocument.createElement('li');
+					const checkbox = pageElement.ownerDocument.createElement('input');
+					checkbox.setAttribute('type', 'checkbox');
+					if (isChecked) {
+						checkbox.setAttribute('checked', '');
+					}
+					li.appendChild(checkbox);
+					// We need to move children in case an image was marked as TO-DO
+					while (element.firstChild) {
+						li.appendChild(element.firstChild);
+					}
+					ul.appendChild(li);
+					element.replaceWith(ul);
+				}
 			}
 			// All other OneNote tags are already in the Obsidian tag format ;)
 			else {
@@ -1055,8 +1093,10 @@ export class OneNoteImporter extends FormatImporter {
 	//
 	// https://github.com/obsidianmd/obsidian-importer/issues/363
 	removeExtraListItemParagraphs(element: HTMLElement): void {
-		// if the first list item child is a paragraph
-		element.querySelectorAll('li > p:first-child').forEach((p) => {
+		// Match `li > p:first-child` (normal case) and also
+		// `li > input:first-child + p` for when convertTags has inserted a
+		// checkbox as the first child before the wrapping paragraph.
+		element.querySelectorAll('li > p:first-child, li > input:first-child + p').forEach((p) => {
 			if (
 				isHTMLElement(p)
 				// and it has 0 margin (this is really just to sanity check that this isn't meant to create newlines, visually)
